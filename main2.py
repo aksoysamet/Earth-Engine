@@ -4,10 +4,21 @@ import io
 import numpy as np
 from osgeo import gdal, gdalnumeric
 import os
-from matplotlib import cm
+# from matplotlib import cm
 # import time
 app = Flask(__name__)
 
+def GetBandArray(bandid, zoom, row, col):
+    file = f'D:\\EarthEngineCache\\tiles\\S2_SR\\Turkey_Mosaic\\B{bandid:02}\\{zoom}\\{row}\\{col}.tif'  # noqa
+    if os.path.exists(file):
+        ds = gdal.Open(file)
+        return gdalnumeric.BandReadAsArray(ds.GetRasterBand(1))
+    raise Exception(f'File could not readed ({file})')
+def GetBandNoData(bandid, zoom, row, col):
+    file = f'D:\\EarthEngineCache\\tiles\\S2_SR\\Turkey_Mosaic\\B{bandid:02}\\{zoom}\\{row}\\{col}.tif'  # noqa
+    if os.path.exists(file):
+        ds = gdal.Open(file)
+        return ds.GetRasterBand(1).GetNoDataValue()
 
 @app.route('/<int:zoom>/<int:row>/<int:col>/')
 def index(zoom, row, col):
@@ -22,59 +33,52 @@ def index(zoom, row, col):
     else:
         img_Arr = np.zeros((256, 256, 2), dtype=np.uint8)
     compress_jpeg = True  # True for auto JPEG
-    sent_type = 'image/png'
-    # file = f'D:\\EarthEngineCache\\tiles\\S2_SR\\S2B_MSIL2A_20190624T084609_N0212_R107_T35TPF_20190624T123109\\{zoom}\\{row}\\{col}.tif'  # noqa
-    file = f'D:\\EarthEngineCache\\tiles\\L8_SR\\Turkey_2019_Mosaic\\{zoom}\\{row}\\{col}.tif'  # noqa
-    if os.path.exists(file):
-        ds = gdal.Open(file)
-
+    try:
+        sent_type = 'image/png'
         if algo == 'None':
-            srcBand = ds.GetRasterBand(r)
-            img_Arr[:, :, 0] = gdalnumeric.BandReadAsArray(srcBand)  # noqa
+            
+            img_Arr[:, :, 0] = GetBandArray(r, zoom, row, col)
             if r == g:
                 if g == b:
                     algo = 'GNone'
                     img_Arr = img_Arr[:, :, :2]
                 else:
                     img_Arr[:, :, 1] = img_Arr[:, :, 0]
-                    img_Arr[:, :, 2] = gdalnumeric.BandReadAsArray(ds.GetRasterBand(b))  # noqa
+                    img_Arr[:, :, 2] = GetBandArray(b,zoom, row, col)  # noqa
             else:
                 if r == b:
                     img_Arr[:, :, 2] = img_Arr[:, :, 0]
                 else:
-                    img_Arr[:, :, 2] = gdalnumeric.BandReadAsArray(ds.GetRasterBand(b))  # noqa
-                img_Arr[:, :, 1] = gdalnumeric.BandReadAsArray(ds.GetRasterBand(g))  # noqa
-
-            transparancy = (img_Arr[:, :, 0] != srcBand.GetNoDataValue())  # noqa
-            # start = time.time()
-            # img_Arr = np.interp(img_Arr, (0, 3000), (0, 255)).astype(np.uint8)  # noqa
+                    img_Arr[:, :, 2] = GetBandArray(b,zoom, row, col)  # noqa
+                img_Arr[:, :, 1] = GetBandArray(g,zoom, row, col)  # noqa
+            transparancy = (img_Arr[:, :, 0] != GetBandNoData(r, zoom, row, col))
+            
             img_Arr = img_Arr * (255/3000)
             img_Arr = img_Arr.clip(0, 255).astype(np.uint8)
-            # print("Interpolation Time: ", time.time()-start)
+        
         elif algo == 'NDVI':
-            nir = gdalnumeric.BandReadAsArray(ds.GetRasterBand(5))  # 8
-            red = gdalnumeric.BandReadAsArray(ds.GetRasterBand(4))
+            nir = GetBandArray(8,zoom, row, col)
+            red = GetBandArray(4,zoom, row, col)
             transparancy = (nir + red) != 0  # noqa
             add_arr = np.add(nir, red, dtype=int)
             sub_arr = np.subtract(nir, red, dtype=int)
             NDVI = np.divide(sub_arr, add_arr, dtype=float)
-            # img_Arr[:, :, 0] = np.interp(NDVI, (-1, 1), (0, 255)).astype(np.uint8)  # noqa
-            rNDVI = np.interp(NDVI, (-1, 1), (0, 1))  # noqa
-            img_Arr = np.uint8(cm.gist_earth(rNDVI)*255)
-            img_Arr[:, :, 3] = 0
+            img_Arr[:, :, 0] = np.interp(NDVI, (-1, 1), (0, 255)).astype(np.uint8)  # noqa
+            # rNDVI = np.interp(NDVI, (-1, 1), (0, 1))  # noqa
+            # img_Arr = np.uint8(cm.gist_earth(rNDVI)*255)
+            # img_Arr[:, :, 3] = 0
 
         elif algo == 'NBR':
-            nir = gdalnumeric.BandReadAsArray(ds.GetRasterBand(5))  # 8
-            swir = gdalnumeric.BandReadAsArray(ds.GetRasterBand(6))  # 12
+            nir = GetBandArray(8,zoom, row, col)  # 8
+            swir = GetBandArray(12,zoom, row, col)  # 12
             transparancy = (nir + swir) != 0  # noqa
             add_arr = np.add(nir, swir, dtype=int)
             sub_arr = np.subtract(nir, swir, dtype=int)
             NBR = np.divide(sub_arr, add_arr, dtype=float)
             img_Arr[:, :, 0] = np.interp(NBR, (-1, 1), (0, 255)).astype(np.uint8)  # noqa
-
-        compress_jpeg = np.all(transparancy)  # Uncommet for auto JPEG
-        # print(compress_jpeg)
-        if algo == 'None' or algo == 'NDVI':
+        
+        compress_jpeg = np.all(transparancy) 
+        if algo == 'None': # or algo == 'NDVI':
             if not compress_jpeg:
                 img_Arr[transparancy, 3] = 255
                 img = Image.fromarray(img_Arr, 'RGBA')
@@ -96,14 +100,10 @@ def index(zoom, row, col):
                 # image_save = time.time()
                 img.save(img_io, "JPEG")
                 sent_type = 'image/jpeg'
-
-        # end = time.time()
-        # print(f"Total Time: {end - start}, Type: {sent_type}")  # noqa
-    else:
+    except:
         return ('', 204)
     img_io.seek(0)
     return send_file(img_io, mimetype=sent_type)
-
 
 if __name__ == '__main__':
     app.run(debug=False, port=5000)
